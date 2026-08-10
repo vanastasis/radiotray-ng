@@ -20,6 +20,46 @@
 #include <radiotray-ng/i_bookmarks.hpp>
 #include <radiotray-ng/i_radiotray_ng.hpp>
 #include <rtng_user_agent.hpp>
+#include <gdk-pixbuf/gdk-pixbuf.h>
+
+
+namespace
+{
+	GtkWidget* create_station_menu_item(const IBookmarks::station_data_t& station)
+	{
+		if (!station.image.empty())
+		{
+			const std::string image_path{radiotray_ng::word_expand(station.image)};
+			GError* error = nullptr;
+			GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_scale(image_path.c_str(), 24, 24, TRUE, &error);
+
+			if (pixbuf != nullptr)
+			{
+				GtkWidget* menu_item = gtk_image_menu_item_new_with_label(station.name.c_str());
+				GtkWidget* image = gtk_image_new_from_pixbuf(pixbuf);
+
+				gtk_image_menu_item_set_image(GTK_IMAGE_MENU_ITEM(menu_item), image);
+				gtk_image_menu_item_set_always_show_image(GTK_IMAGE_MENU_ITEM(menu_item), TRUE);
+				gtk_widget_show(image);
+				g_object_unref(pixbuf);
+
+				if (error != nullptr)
+				{
+					g_error_free(error);
+				}
+
+				return menu_item;
+			}
+
+			if (error != nullptr)
+			{
+				g_error_free(error);
+			}
+		}
+
+		return gtk_menu_item_new_with_label(station.name.c_str());
+	}
+}
 
 
 AppindicatorGui::AppindicatorGui(std::shared_ptr<IConfig> config, std::shared_ptr<IRadioTrayNG> radiotray_ng,
@@ -197,7 +237,7 @@ void AppindicatorGui::build_root_bookmarks_menu_item()
 	{
 		for (const IBookmarks::station_data_t& s : root_stations)
 		{
-			GtkWidget* menu_item = gtk_menu_item_new_with_label(s.name.c_str());
+			GtkWidget* menu_item = create_station_menu_item(s);
 			gtk_menu_shell_append(GTK_MENU_SHELL(this->menu), menu_item);
 
 			menu_item_data* cb_data = new menu_item_data{this->shared_from_this(), ROOT_BOOKMARK_GROUP, s.name};
@@ -237,7 +277,7 @@ void AppindicatorGui::build_bookmarks_menu_item()
 
 			for (const auto& s : (*this->bookmarks)[i].stations)
 			{
-				GtkWidget* sub_menu_item = gtk_menu_item_new_with_label(s.name.c_str());
+				GtkWidget* sub_menu_item = create_station_menu_item(s);
 				gtk_menu_shell_append(GTK_MENU_SHELL(sub_menu_items), sub_menu_item);
 
 				auto cb_data = new menu_item_data{this->shared_from_this(), group, s.name};
