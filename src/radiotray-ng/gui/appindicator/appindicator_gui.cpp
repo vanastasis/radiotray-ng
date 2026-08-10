@@ -31,7 +31,7 @@ namespace
 		{
 			const std::string image_path{radiotray_ng::word_expand(station.image)};
 			GError* error = nullptr;
-			GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_scale(image_path.c_str(), 24, 24, TRUE, &error);
+			GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_scale(image_path.c_str(), 36, 36, TRUE, &error);
 
 			if (pixbuf != nullptr)
 			{
