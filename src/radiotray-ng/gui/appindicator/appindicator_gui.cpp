@@ -35,17 +35,12 @@ namespace
 
 			if (pixbuf != nullptr)
 			{
-				GtkWidget* menu_item = gtk_menu_item_new();
-				GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+				GtkWidget* menu_item = gtk_image_menu_item_new_with_label(station.name.c_str());
 				GtkWidget* image = gtk_image_new_from_pixbuf(pixbuf);
-				GtkWidget* label = gtk_label_new(station.name.c_str());
 
-				// Pack station artwork before the label.
-				gtk_box_pack_start(GTK_BOX(row), image, FALSE, FALSE, 0);
-				gtk_box_pack_start(GTK_BOX(row), label, TRUE, TRUE, 0);
-				gtk_label_set_xalign(GTK_LABEL(label), 0.0F);
-				gtk_container_add(GTK_CONTAINER(menu_item), row);
-				gtk_widget_show_all(menu_item);
+				gtk_image_menu_item_set_image(GTK_IMAGE_MENU_ITEM(menu_item), image);
+				gtk_image_menu_item_set_always_show_image(GTK_IMAGE_MENU_ITEM(menu_item), TRUE);
+				gtk_widget_show(image);
 				g_object_unref(pixbuf);
 
 				if (error != nullptr)
