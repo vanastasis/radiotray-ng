@@ -69,6 +69,7 @@ AppindicatorGui::AppindicatorGui(std::shared_ptr<IConfig> config, std::shared_pt
 	, config(std::move(config))
 	, event_bus(std::move(event_bus))
 	, appindicator(nullptr)
+	, direct_sni(nullptr)
 	, menu(nullptr)
 	, action_menu_item(nullptr)
 	, volume_menu_item(nullptr)
@@ -103,7 +104,8 @@ void AppindicatorGui::on_state_event(const IEventBus::event& /*ev*/, IEventBus::
 {
 	const std::string state{data[STATE_KEY]};
 
-	if (this->config->get_bool(TAG_INFO_IN_LABEL_KEY, DEFAULT_TAG_INFO_IN_LABEL_VALUE))
+	if (this->appindicator != nullptr &&
+		this->config->get_bool(TAG_INFO_IN_LABEL_KEY, DEFAULT_TAG_INFO_IN_LABEL_VALUE))
 	{
 		app_indicator_set_label(this->appindicator, nullptr, nullptr);
 	}
@@ -113,15 +115,21 @@ void AppindicatorGui::on_state_event(const IEventBus::event& /*ev*/, IEventBus::
 
 	if (state == STATE_PLAYING || state == STATE_BUFFERING || state == STATE_CONNECTING)
 	{
-		app_indicator_set_icon(this->appindicator, radiotray_ng::word_expand(this->config->get_string(RADIOTRAY_NG_ICON_ON_KEY,
-			DEFAULT_RADIOTRAY_NG_ICON_ON_VALUE)).c_str());
+		if (this->direct_sni != nullptr)
+		{
+			this->direct_sni->set_icon(radiotray_ng::word_expand(this->config->get_string(
+				RADIOTRAY_NG_ICON_ON_KEY, DEFAULT_RADIOTRAY_NG_ICON_ON_VALUE)));
+		}
 		return;
 	}
 
 	if (state == STATE_STOPPED)
 	{
-		app_indicator_set_icon(this->appindicator, radiotray_ng::word_expand(this->config->get_string(RADIOTRAY_NG_ICON_OFF_KEY,
-			DEFAULT_RADIOTRAY_NG_ICON_OFF_VALUE)).c_str());
+		if (this->direct_sni != nullptr)
+		{
+			this->direct_sni->set_icon(radiotray_ng::word_expand(this->config->get_string(
+				RADIOTRAY_NG_ICON_OFF_KEY, DEFAULT_RADIOTRAY_NG_ICON_OFF_VALUE)));
+		}
 		return;
 	}
 }
@@ -184,6 +192,201 @@ void AppindicatorGui::on_indicator_scrolled(GtkWidget* /*widget*/, gint /*delta*
 	}
 }
 
+
+void AppindicatorGui::position_native_menu(
+    GtkMenu* menu,
+    gint* x,
+    gint* y,
+    gboolean* push_in,
+    gpointer data)
+{
+    auto app = static_cast<AppindicatorGui*>(data);
+
+    GtkRequisition minimum_size{};
+    GtkRequisition natural_size{};
+
+    gtk_widget_get_preferred_size(
+        GTK_WIDGET(menu),
+        &minimum_size,
+        &natural_size);
+
+    GdkDisplay* display = gdk_display_get_default();
+
+    if (display == nullptr)
+    {
+        *x = app->native_menu_x;
+        *y = app->native_menu_y;
+        *push_in = TRUE;
+        return;
+    }
+
+    // ALWAYS use the monitor containing the tray click/pointer.
+    // Do not move the menu to a monitor above or below it.
+    GdkMonitor* monitor =
+        gdk_display_get_monitor_at_point(
+            display,
+            app->native_menu_x,
+            app->native_menu_y);
+
+    GdkRectangle geometry{};
+    GdkRectangle workarea{};
+
+    if (monitor != nullptr)
+    {
+        gdk_monitor_get_geometry(monitor, &geometry);
+        gdk_monitor_get_workarea(monitor, &workarea);
+        gtk_menu_place_on_monitor(menu, monitor);
+    }
+    else
+    {
+        geometry.x = 0;
+        geometry.y = 0;
+        geometry.width = gdk_screen_width();
+        geometry.height = gdk_screen_height();
+        workarea = geometry;
+    }
+
+    constexpr gint margin = 2;
+    constexpr gint icon_half_width = 10;
+
+    // GNOME tray menus are normally right-aligned to the indicator.
+    gint menu_x =
+        app->native_menu_x -
+        natural_size.width +
+        icon_half_width;
+
+    const gint work_right =
+        workarea.x + workarea.width;
+
+    if (menu_x + natural_size.width > work_right - margin)
+        menu_x = work_right - natural_size.width - margin;
+
+    if (menu_x < workarea.x + margin)
+        menu_x = workarea.x + margin;
+
+    const gint geometry_bottom =
+        geometry.y + geometry.height;
+
+    const gint work_bottom =
+        workarea.y + workarea.height;
+
+    // Detect whether GNOME has reserved panel space at the top or bottom.
+    const gboolean top_panel =
+        workarea.y > geometry.y &&
+        app->native_menu_y <= workarea.y + 32;
+
+    const gboolean bottom_panel =
+        work_bottom < geometry_bottom &&
+        app->native_menu_y >= work_bottom - 32;
+
+    gint menu_y = 0;
+
+    if (top_panel)
+    {
+        // Directly BELOW the GNOME top panel.
+        menu_y = workarea.y + margin;
+    }
+    else if (bottom_panel)
+    {
+        // Directly ABOVE a bottom panel.
+        menu_y =
+            work_bottom -
+            natural_size.height -
+            margin;
+    }
+    else if (app->native_menu_y <
+             geometry.y + (geometry.height / 2))
+    {
+        // Fallback for panels that do not reserve a work area.
+        menu_y =
+            app->native_menu_y + 18;
+    }
+    else
+    {
+        menu_y =
+            app->native_menu_y -
+            natural_size.height -
+            18;
+    }
+
+    if (menu_y < workarea.y + margin)
+        menu_y = workarea.y + margin;
+
+    if (menu_y + natural_size.height > work_bottom - margin)
+        menu_y = work_bottom - natural_size.height - margin;
+
+    *x = menu_x;
+    *y = menu_y;
+    *push_in = TRUE;
+}
+
+
+void AppindicatorGui::show_native_menu(gint x, gint y)
+{
+    // SecondaryActivate/ContextMenu supply genuine GNOME Shell coordinates.
+    // KEEP them.  Only the DBusMenu single-click bridge uses -1/-1, because
+    // DBusMenu's root "opened" event contains no pointer coordinates.
+    if (x < 0 || y < 0)
+    {
+        GdkDisplay* display = gdk_display_get_default();
+
+        if (display != nullptr)
+        {
+            GdkSeat* seat =
+                gdk_display_get_default_seat(display);
+
+            if (seat != nullptr)
+            {
+                GdkDevice* pointer =
+                    gdk_seat_get_pointer(seat);
+
+                if (pointer != nullptr)
+                {
+                    gint pointer_x = 0;
+                    gint pointer_y = 0;
+
+                    gdk_device_get_position(
+                        pointer,
+                        nullptr,
+                        &pointer_x,
+                        &pointer_y);
+
+                    x = pointer_x;
+                    y = pointer_y;
+                }
+            }
+        }
+    }
+
+    if (x < 0 || y < 0)
+    {
+        x = 0;
+        y = 0;
+    }
+
+    this->native_menu_x = x;
+    this->native_menu_y = y;
+
+    const std::string state{
+        this->radiotray_ng->get_state()
+    };
+
+    this->update_action_menu_item(state);
+    this->update_status_menu_item(state);
+    this->update_volume_menu_item();
+
+    gtk_menu_popdown(GTK_MENU(this->menu));
+    gtk_widget_show_all(this->menu);
+
+    gtk_menu_popup(
+        GTK_MENU(this->menu),
+        nullptr,
+        nullptr,
+        &AppindicatorGui::position_native_menu,
+        this,
+        0,
+        GDK_CURRENT_TIME);
+}
 
 void AppindicatorGui::on_status_menu_item(GtkWidget* /*widget*/, gpointer data)
 {
@@ -414,7 +617,8 @@ void AppindicatorGui::update_status_menu_item(const std::string& state)
 				gtk_widget_set_sensitive(this->status_menu_item, TRUE);
 			}
 
-			if (this->config->get_bool(TAG_INFO_IN_LABEL_KEY, DEFAULT_TAG_INFO_IN_LABEL_VALUE))
+			if (this->appindicator != nullptr &&
+				this->config->get_bool(TAG_INFO_IN_LABEL_KEY, DEFAULT_TAG_INFO_IN_LABEL_VALUE))
 			{
 				std::string label_text = title;
 
@@ -493,7 +697,10 @@ void AppindicatorGui::build_action_menu_item()
 
 	g_signal_connect(G_OBJECT(this->action_menu_item), "activate", G_CALLBACK(on_action_menu_item), gpointer(this));
 
-	app_indicator_set_secondary_activate_target(this->appindicator, this->action_menu_item);
+	if (this->appindicator != nullptr)
+	{
+		app_indicator_set_secondary_activate_target(this->appindicator, this->action_menu_item);
+	}
 
 	this->update_action_menu_item(STATE_STOPPED);
 }
@@ -628,7 +835,10 @@ void AppindicatorGui::build_menu()
 		this->build_quit_menu_item();
 	}
 
-	app_indicator_set_menu(appindicator, GTK_MENU(this->menu));
+	if (this->appindicator != nullptr)
+	{
+		app_indicator_set_menu(this->appindicator, GTK_MENU(this->menu));
+	}
 }
 
 
@@ -844,22 +1054,65 @@ void AppindicatorGui::reload_bookmarks()
 
 void AppindicatorGui::run(int argc, char* argv[])
 {
+	// Panel icon: direct modern D-Bus StatusNotifierItem.
+	// Popup menu: native GTK through XWayland, positioned using GNOME's X/Y.
+	gdk_set_allowed_backends("x11");
 	gtk_init(&argc, &argv);
-
-	const std::string icon_off{radiotray_ng::word_expand(this->config->get_string(RADIOTRAY_NG_ICON_OFF_KEY, DEFAULT_RADIOTRAY_NG_ICON_OFF_VALUE))};
-
-	this->appindicator = app_indicator_new(APP_NAME, icon_off.c_str(), APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
-	app_indicator_set_attention_icon(this->appindicator, icon_off.c_str());
-	app_indicator_set_status(this->appindicator, APP_INDICATOR_STATUS_ACTIVE);
-
-	g_signal_connect(G_OBJECT(this->appindicator), "scroll-event", G_CALLBACK(on_indicator_scrolled), gpointer(this));
 
 	// get default icon (todo: figure this out at runtime)
 	this->resource_path = RTNG_DEFAULT_INSTALL_DIR;
-
 	gtk_window_set_default_icon_from_file((this->resource_path + RADIOTRAY_NG_LOGO_ICON).c_str(), nullptr);
 
+	// Keep the real menu inside RadioTray-NG so GtkImageMenuItem preserves the
+	// existing 36x36 station artwork on the LEFT.
 	this->build_menu();
+
+	this->direct_sni = std::make_unique<DirectSni>(
+		[this](gint x, gint y)
+		{
+			this->show_native_menu(x, y);
+		},
+		[this](gint delta, const std::string& orientation)
+		{
+			// GNOME forwards smooth-scroll deltas through SNI Scroll().
+			// Match RadioTray's original AppIndicator behaviour:
+			//   vertical:   UP (negative dy)   -> volume up
+			//               DOWN (positive dy) -> volume down
+			//   horizontal: RIGHT (positive dx)-> volume up
+			//               LEFT (negative dx) -> volume down
+			if (orientation == "horizontal")
+			{
+				if (delta > 0)
+				{
+					this->radiotray_ng->volume_up();
+				}
+				else if (delta < 0)
+				{
+					this->radiotray_ng->volume_down();
+				}
+			}
+			else
+			{
+				if (delta < 0)
+				{
+					this->radiotray_ng->volume_up();
+				}
+				else if (delta > 0)
+				{
+					this->radiotray_ng->volume_down();
+				}
+			}
+		});
+
+	const std::string icon_off{radiotray_ng::word_expand(this->config->get_string(
+		RADIOTRAY_NG_ICON_OFF_KEY, DEFAULT_RADIOTRAY_NG_ICON_OFF_VALUE))};
+
+	this->direct_sni->set_icon(icon_off);
+
+	if (!this->direct_sni->start())
+	{
+		LOG(error) << "Unable to register direct StatusNotifierItem";
+	}
 
 	if (argc > 1)
 	{
@@ -871,7 +1124,6 @@ void AppindicatorGui::run(int argc, char* argv[])
 
 	gtk_main();
 
+	this->direct_sni.reset();
 	gtk_widget_destroy(this->menu);
-
-	g_object_unref(G_OBJECT(this->appindicator));
 }
