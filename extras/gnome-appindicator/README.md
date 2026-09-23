@@ -4,6 +4,8 @@ RadioTray-NG's `DirectSni` backend deliberately exports a tiny DBusMenu object b
 
 RadioTray-NG does **not** want GNOME Shell to render that DBusMenu. Its real menu is the native GTK menu built by `AppindicatorGui`, because that preserves the existing station artwork and GTK layout. Stock GNOME AppIndicator click handling opens the DBusMenu on primary/right click, so the shim appears as an empty grey popup before RadioTray-NG opens its own menu.
 
+The DBusMenu bridge item is therefore exported as **hidden**. GNOME Shell still counts it for `numMenuItems`, so primary-click can open the DBusMenu root and deliver the root `opened` event, but there is no visible Shell menu row to draw behind the native GTK popup. This is the source-level fallback that removes the grey pill even when the extension-side click bridge is not taking effect.
+
 Run:
 
 ```bash
