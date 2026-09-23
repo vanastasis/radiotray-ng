@@ -1,0 +1,17 @@
+# GNOME AppIndicator bridge for RadioTray-NG
+
+RadioTray-NG's `DirectSni` backend deliberately exports a tiny DBusMenu object because the GNOME AppIndicator extension requires both an indicator ID and a menu path before it considers a StatusNotifierItem ready.
+
+RadioTray-NG does **not** want GNOME Shell to render that DBusMenu. Its real menu is the native GTK menu built by `AppindicatorGui`, because that preserves the existing station artwork and GTK layout. Stock GNOME AppIndicator click handling opens the DBusMenu on primary/right click, so the shim appears as an empty grey popup before RadioTray-NG opens its own menu.
+
+Run:
+
+```bash
+./extras/gnome-appindicator/fix-radiotray-appindicator.sh
+```
+
+The helper modifies only the `radiotray-ng` indicator path in the user's copy of `indicatorStatusIcon.js`. It routes primary, middle and secondary clicks to `SecondaryActivate(x, y)`. Other indicators continue through the extension's original handler unchanged.
+
+On GNOME Wayland, log out and back in once after applying the patch.
+
+The helper never edits `/usr/share/gnome-shell/extensions` directly. If the AppIndicator extension is installed system-wide, it creates a per-user copy first and patches that copy.

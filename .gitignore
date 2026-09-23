@@ -60,3 +60,5 @@ local.properties
 build/
 
 cmake-build-debug/
+/working/
+/build-fixed/

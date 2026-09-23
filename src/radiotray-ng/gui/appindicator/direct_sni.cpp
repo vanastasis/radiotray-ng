@@ -28,7 +28,13 @@ const char* SNI_XML = R"XML(
       <arg name="x" type="i" direction="in"/>
       <arg name="y" type="i" direction="in"/>
     </method>
-<method name="SecondaryActivate">
+
+    <method name="Activate">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+
+    <method name="SecondaryActivate">
       <arg name="x" type="i" direction="in"/>
       <arg name="y" type="i" direction="in"/>
     </method>
@@ -326,6 +332,7 @@ void DirectSni::on_sni_method_call(
     auto self = static_cast<DirectSni*>(user_data);
 
     if (g_strcmp0(method_name, "ContextMenu") == 0 ||
+        g_strcmp0(method_name, "Activate") == 0 ||
         g_strcmp0(method_name, "SecondaryActivate") == 0)
     {
         gint x = 0;
