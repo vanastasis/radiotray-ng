@@ -34,7 +34,8 @@ else
 fi
 
 JS="${EXT_DIR}/${JS_REL}"
-BACKUP="${JS}.before-radiotray-${STAMP}"
+BACKUP_DIR="${EXT_DIR}/.radiotray-ng-backups"
+BACKUP="${BACKUP_DIR}/indicatorStatusIcon.js.${STAMP}"
 
 # Detect the old experimental script which replaced the handler for every icon.
 if grep -q "RadioTray test: LEFT, MIDDLE and RIGHT" "$JS"; then
@@ -47,6 +48,7 @@ if grep -q "$MARKER" "$JS"; then
     exit 0
 fi
 
+mkdir -p "$BACKUP_DIR"
 cp -a "$JS" "$BACKUP"
 say "Backup: $BACKUP"
 
@@ -92,15 +94,13 @@ block = r'''
 '''
 s = s[:insert_at] + block + s[insert_at:]
 
-# GNOME 48/49-era PanelMenu.Button versions may also have a ClickGesture
-# which can open the Shell menu independently.  Disable that gesture only
-# for RadioTray-NG.  Newer AppIndicator versions may already disable it
-# globally upstream; in that case this extra targeted guard is harmless.
-assign = "        this._indicator = indicator;"
-idx = s.find(assign)
-if idx >= 0:
-    guard_marker = "RadioTray-NG owns click handling; keep the Shell click gesture out of its path."
-    if guard_marker not in s:
+# Older extension releases may still have a PanelMenu click gesture.  Current
+# releases already disable it globally.  Add a targeted fallback only when the
+# extension does not already disable the gesture itself.
+if "this._clickGesture?.set_enabled(false);" not in s:
+    assign = "        this._indicator = indicator;"
+    idx = s.find(assign)
+    if idx >= 0:
         end = idx + len(assign)
         guard = r'''
 
@@ -112,6 +112,11 @@ if idx >= 0:
 
 path.write_text(s.rstrip("\n") + "\n")
 PY
+
+if ! grep -qF "$MARKER" "$JS"; then
+    cp -a "$BACKUP" "$JS"
+    die "Patch verification failed; original indicatorStatusIcon.js was restored."
+fi
 
 say
 say "Patched only RadioTray-NG. Other AppIndicators retain their normal click behaviour."
