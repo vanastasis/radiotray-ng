@@ -102,7 +102,7 @@ private:
 		std::string group;
 		std::string station;
 
-		static void free_cb_data(gpointer* p,  GClosure* /*closure*/)
+		static void free_cb_data(gpointer p, GClosure* /*closure*/)
 		{
 			delete reinterpret_cast<menu_item_data*>(p);
 		}
