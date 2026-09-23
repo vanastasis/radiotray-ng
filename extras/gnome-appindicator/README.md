@@ -6,7 +6,7 @@ RadioTray-NG does **not** want GNOME Shell to render that DBusMenu. Its real men
 
 The DBusMenu bridge item is therefore exported as **hidden**. GNOME Shell still counts it for `numMenuItems`, so primary-click can open the DBusMenu root and deliver the root `opened` event, but there is no visible Shell menu row to draw behind the native GTK popup.
 
-`DirectSni` intentionally does **not** export `StatusNotifierItem.Activate`. Current GNOME AppIndicator detects that and treats RadioTray-NG as menu-only, so a primary click opens the DBusMenu immediately instead of waiting for a possible double-click activation. The hidden root bridge then opens the native GTK menu on the first click. This provides a source-level single-click fallback even when the extension-side click bridge is not taking effect.
+`DirectSni` exports `StatusNotifierItem.Activate` for the RadioTray-specific GNOME bridge. The bridge intercepts only left and right button presses and invokes `Activate` immediately; middle click is suppressed. The hidden DBusMenu item remains only as a readiness/fallback bridge and is not rendered.
 
 Run:
 
@@ -14,7 +14,7 @@ Run:
 ./extras/gnome-appindicator/fix-radiotray-appindicator.sh
 ```
 
-The helper modifies only the `radiotray-ng` indicator path in the user's copy of `indicatorStatusIcon.js`. It routes primary, middle and secondary clicks to `SecondaryActivate(x, y)`. Other indicators continue through the extension's original handler unchanged.
+The helper modifies only the `radiotray-ng` indicator path in the user's copy of `indicatorStatusIcon.js`. Version 2 routes **primary (left)** and **secondary (right)** clicks directly to `Activate(x, y)` so the native GTK menu opens on the first click. **Middle click is consumed and deliberately does nothing.** Other indicators continue through the extension's original handler unchanged.
 
 On GNOME Wayland, log out and back in once after applying the patch.
 
