@@ -14,15 +14,15 @@ else()
         radiotray-ng
         ncurses_gui
         ${NCURSES_LIBRARIES})
-endif()    
+endif()
 
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     target_link_libraries(radiotray-ng rtng_dbus)
 endif()
 
 target_link_libraries(
-  radiotray-ng  
-  bookmarks  
+  radiotray-ng
+  bookmarks
   config
   event_bus
   player
