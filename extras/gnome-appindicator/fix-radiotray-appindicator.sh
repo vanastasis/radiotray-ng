@@ -8,6 +8,7 @@ JS_REL="indicatorStatusIcon.js"
 MARKER_V1="RadioTray-NG native-menu click bridge"
 MARKER_V2="RadioTray-NG native-menu click bridge v2"
 MARKER_V3="RadioTray-NG native-menu click bridge v3"
+MARKER_V4="RadioTray-NG native-menu click bridge v4"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 say() { printf '%s\n' "$*"; }
@@ -42,8 +43,8 @@ if grep -q "RadioTray test: LEFT, MIDDLE and RIGHT" "$JS"; then
     die "The old all-indicators test patch is installed in ${JS}. Restore its backup/original extension first, then run this script again."
 fi
 
-if grep -qF "$MARKER_V3" "$JS"; then
-    say "Already patched with v3: $JS"
+if grep -qF "$MARKER_V4" "$JS"; then
+    say "Already patched with v4: $JS"
     say "No changes required."
     exit 0
 fi
@@ -54,12 +55,12 @@ say "Backup: $BACKUP"
 
 python3 - "$JS" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
 s = path.read_text()
 
-marker_v3 = "RadioTray-NG native-menu click bridge v3"
 press_sig = "    vfunc_button_press_event(event) {"
 scroll_sig = "    vfunc_scroll_event(event) {"
 
@@ -68,111 +69,90 @@ if press_sig not in s:
 if scroll_sig not in s:
     raise SystemExit("ERROR: Could not find vfunc_scroll_event(event) in indicatorStatusIcon.js")
 
-old_v1 = r'''
-        // RadioTray-NG native-menu click bridge
-        // RadioTray-NG owns its GTK popup menu.  Do not open GNOME Shell's
-        // DBusMenu shim for this one indicator; send the click directly to
-        // SecondaryActivate(x, y), which RadioTray-NG handles in direct_sni.cpp.
-        if (this._indicator?.id === 'radiotray-ng') {
-            if (this._waitDoubleClickPromise)
-                this._waitDoubleClickPromise.cancel();
+# Remove any earlier RadioTray bridge block from the press handler.
+press_start = s.find(press_sig)
+press_body_start = press_start + len(press_sig)
+stock_marker = "        if (this._waitDoubleClickPromise)"
+stock_start = s.find(stock_marker, press_body_start)
+if stock_start < 0:
+    raise SystemExit("ERROR: Could not locate the stock AppIndicator press handler body")
 
-            const button = event.get_button();
-            if (button === Clutter.BUTTON_PRIMARY ||
-                button === Clutter.BUTTON_MIDDLE ||
-                button === Clutter.BUTTON_SECONDARY) {
-                if (Main.panel.menuManager.activeMenu)
-                    Main.panel.menuManager._closeMenu(
-                        true, Main.panel.menuManager.activeMenu);
+prefix = s[press_body_start:stock_start]
+if "RadioTray-NG native-menu click bridge" in prefix:
+    prefix = ""
+s = s[:press_body_start] + prefix + s[stock_start:]
 
-                this._indicator.secondaryActivate(
-                    event.get_time(), ...event.get_coords());
-                return Clutter.EVENT_STOP;
-            }
-        }
-'''
+# Remove the v3 release handler if present.
+release_pattern = re.compile(
+    r'\n\s{4}vfunc_button_release_event\(event\) \{.*?\n\s{4}\}\n\n',
+    re.S)
+s, removed = release_pattern.subn("\n", s, count=1)
 
-old_v2 = r'''
-        // RadioTray-NG native-menu click bridge v2
-        // PRIMARY and SECONDARY open RadioTray-NG's native GTK menu on the
-        // first click. MIDDLE is intentionally consumed and does nothing.
-        if (this._indicator?.id === 'radiotray-ng') {
-            if (this._waitDoubleClickPromise)
-                this._waitDoubleClickPromise.cancel();
-
-            const button = event.get_button();
-
-            if (button === Clutter.BUTTON_PRIMARY ||
-                button === Clutter.BUTTON_SECONDARY) {
-                if (Main.panel.menuManager.activeMenu)
-                    Main.panel.menuManager._closeMenu(
-                        true, Main.panel.menuManager.activeMenu);
-
-                this._indicator.open(
-                    ...event.get_coords(), event.get_time()).catch(logError);
-                return Clutter.EVENT_STOP;
-            }
-
-            if (button === Clutter.BUTTON_MIDDLE)
-                return Clutter.EVENT_STOP;
-        }
-'''
-
-for old in (old_v1, old_v2):
-    if old in s:
-        s = s.replace(old, "", 1)
-
-# GTK popup menus opened while the mouse button is still physically held can
-# immediately consume the corresponding release and disappear.  That made a
-# "single click" look like it needed a double click.  Consume the press here,
-# remember it, and invoke Activate only on the matching release.
+# V4: detect RadioTray-NG defensively. Some extension builds expose the app
+# identity through id, some through title/uniqueId; do not rely on one field.
 press_start = s.find(press_sig)
 press_insert = press_start + len(press_sig)
 press_block = r'''
-        // RadioTray-NG native-menu click bridge v3
-        // Arm LEFT/RIGHT on press, open on release. This avoids GTK consuming
-        // the initiating button release and immediately closing its native menu.
-        if (this._indicator?.id === 'radiotray-ng') {
+        // RadioTray-NG native-menu click bridge v4
+        const rtId = String(this._indicator?.id ?? '').toLowerCase();
+        const rtTitle = String(this._indicator?.title ?? '').toLowerCase();
+        const rtUniqueId = String(this._indicator?.uniqueId ?? '').toLowerCase();
+        const isRadioTray =
+            rtId === 'radiotray-ng' ||
+            rtTitle === 'radiotray-ng' ||
+            rtUniqueId.includes('radiotray-ng') ||
+            rtUniqueId.includes('radiotray');
+
+        if (isRadioTray) {
             if (this._waitDoubleClickPromise)
                 this._waitDoubleClickPromise.cancel();
 
             const button = event.get_button();
 
+            // Consume the press so none of the stock double-click/menu-toggle
+            // logic below can run for RadioTray-NG.
             if (button === Clutter.BUTTON_PRIMARY ||
-                button === Clutter.BUTTON_SECONDARY) {
-                this._radiotrayMenuButton = button;
+                button === Clutter.BUTTON_SECONDARY ||
+                button === Clutter.BUTTON_MIDDLE)
                 return Clutter.EVENT_STOP;
-            }
-
-            if (button === Clutter.BUTTON_MIDDLE) {
-                delete this._radiotrayMenuButton;
-                return Clutter.EVENT_STOP;
-            }
         }
 '''
 s = s[:press_insert] + press_block + s[press_insert:]
 
+# Open on button release. Call the generated D-Bus Activate proxy directly,
+# bypassing AppIndicator.open() and its activation-token/double-click policy.
 release_method = r'''
     vfunc_button_release_event(event) {
-        if (this._indicator?.id === 'radiotray-ng') {
+        const rtId = String(this._indicator?.id ?? '').toLowerCase();
+        const rtTitle = String(this._indicator?.title ?? '').toLowerCase();
+        const rtUniqueId = String(this._indicator?.uniqueId ?? '').toLowerCase();
+        const isRadioTray =
+            rtId === 'radiotray-ng' ||
+            rtTitle === 'radiotray-ng' ||
+            rtUniqueId.includes('radiotray-ng') ||
+            rtUniqueId.includes('radiotray');
+
+        if (isRadioTray) {
             const button = event.get_button();
 
-            if (button === Clutter.BUTTON_MIDDLE) {
-                delete this._radiotrayMenuButton;
+            if (button === Clutter.BUTTON_MIDDLE)
                 return Clutter.EVENT_STOP;
-            }
 
-            if ((button === Clutter.BUTTON_PRIMARY ||
-                 button === Clutter.BUTTON_SECONDARY) &&
-                this._radiotrayMenuButton === button) {
-                delete this._radiotrayMenuButton;
+            if (button === Clutter.BUTTON_PRIMARY ||
+                button === Clutter.BUTTON_SECONDARY) {
+                if (this._waitDoubleClickPromise)
+                    this._waitDoubleClickPromise.cancel();
 
                 if (Main.panel.menuManager.activeMenu)
                     Main.panel.menuManager._closeMenu(
                         true, Main.panel.menuManager.activeMenu);
 
-                this._indicator.open(
-                    ...event.get_coords(), event.get_time()).catch(logError);
+                const [x, y] = event.get_coords();
+
+                // Direct D-Bus method call: one release => one Activate.
+                this._indicator._proxy.ActivateAsync(
+                    x, y, this._indicator.cancellable).catch(logError);
+
                 return Clutter.EVENT_STOP;
             }
         }
@@ -181,14 +161,13 @@ release_method = r'''
     }
 
 '''
-
 scroll_start = s.find(scroll_sig)
 if scroll_start < 0:
     raise SystemExit("ERROR: Could not locate vfunc_scroll_event(event)")
 s = s[:scroll_start] + release_method + s[scroll_start:]
 
-# Current upstream AppIndicator already disables PanelMenu's click gesture.
-# Keep a targeted fallback for older extension versions.
+# Current upstream AppIndicator disables the PanelMenu click gesture globally.
+# Retain a targeted fallback for older extension releases.
 if "this._clickGesture?.set_enabled(false);" not in s:
     assign = "        this._indicator = indicator;"
     idx = s.find(assign)
@@ -197,7 +176,7 @@ if "this._clickGesture?.set_enabled(false);" not in s:
         guard = r'''
 
         // RadioTray-NG owns click handling; keep the Shell click gesture out of its path.
-        if (this._indicator?.id === 'radiotray-ng')
+        if (String(this._indicator?.id ?? '').toLowerCase() === 'radiotray-ng')
             this._clickGesture?.set_enabled(false);
 '''
         s = s[:end] + guard + s[end:]
@@ -205,21 +184,22 @@ if "this._clickGesture?.set_enabled(false);" not in s:
 path.write_text(s.rstrip("\n") + "\n")
 PY
 
-if ! grep -qF "$MARKER_V3" "$JS"; then
+if ! grep -qF "$MARKER_V4" "$JS"; then
     cp -a "$BACKUP" "$JS"
-    die "Patch verification failed; original indicatorStatusIcon.js was restored."
+    die "V4 patch verification failed; original indicatorStatusIcon.js was restored."
 fi
 
-if ! grep -q "vfunc_button_release_event(event)" "$JS"; then
+if ! grep -q "_proxy.ActivateAsync" "$JS"; then
     cp -a "$BACKUP" "$JS"
-    die "Release-handler verification failed; original indicatorStatusIcon.js was restored."
+    die "Direct Activate verification failed; original indicatorStatusIcon.js was restored."
 fi
 
 say
-say "RadioTray-NG click policy v3 installed:"
-say "  LEFT   -> native menu on first click (opens on release)"
-say "  RIGHT  -> native menu on first click (opens on release)"
+say "RadioTray-NG click policy v4 installed:"
+say "  LEFT   -> direct Activate on first button release"
+say "  RIGHT  -> direct Activate on first button release"
 say "  MIDDLE -> ignored"
+say "  SCROLL -> original AppIndicator volume path"
 say "Other AppIndicators retain their normal click behaviour."
 say "Modified: $JS"
 
@@ -247,6 +227,6 @@ if [[ -n "$ACTIVE_AFTER" ]]; then
 fi
 
 say
-say "GNOME Wayland: log out and back in once so Shell definitely loads the v3 JavaScript."
-say "Expected after login: LEFT/RIGHT one click -> native menu; MIDDLE -> no action; scroll -> volume."
+say "GNOME Wayland: log out and back in once so Shell definitely loads v4."
+say "Expected: LEFT/RIGHT single click -> native menu; MIDDLE -> no action; scroll -> volume."
 say "The hidden DBusMenu bridge keeps the grey popup artefact invisible."
