@@ -442,12 +442,15 @@ void DirectSni::on_menu_method_call(
 
         GVariantBuilder child_props;
         g_variant_builder_init(&child_props, G_VARIANT_TYPE("a{sv}"));
-        // GNOME Shell must see one NORMAL menu item so numMenuItems > 0.
-        // U+200B is visually empty, and disabled means it cannot be invoked.
+        // GNOME Shell must see one menu item so PopupMenu.numMenuItems > 0
+        // and primary-click still opens the DBusMenu root. Keep that bridge
+        // item hidden: the root "opened" event launches RadioTray-NG's native
+        // GTK menu, while the hidden item gives GNOME no visible row/pill to
+        // render behind it.
         g_variant_builder_add(
             &child_props, "{sv}", "label", g_variant_new_string("\xE2\x80\x8B"));
         g_variant_builder_add(
-            &child_props, "{sv}", "visible", g_variant_new_boolean(TRUE));
+            &child_props, "{sv}", "visible", g_variant_new_boolean(FALSE));
         g_variant_builder_add(
             &child_props, "{sv}", "enabled", g_variant_new_boolean(FALSE));
 
@@ -500,7 +503,7 @@ void DirectSni::on_menu_method_call(
         GVariant* value = nullptr;
 
         if (id == 1 && g_strcmp0(property_name, "visible") == 0)
-            value = g_variant_new_boolean(TRUE);
+            value = g_variant_new_boolean(FALSE);
         else if (id == 1 && g_strcmp0(property_name, "enabled") == 0)
             value = g_variant_new_boolean(FALSE);
         else if (id == 1 && g_strcmp0(property_name, "label") == 0)
