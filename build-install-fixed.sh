@@ -59,14 +59,27 @@ say "Simulating installation with APT..."
 apt-get --simulate install "$DEB" || die "APT cannot resolve the generated package on this system; nothing was installed."
 
 say
-say "Installing with APT..."
-sudo apt-get install -y "$DEB"
+say "Installing/reinstalling with APT..."
+# Development builds can legitimately keep the same package version while the
+# source changes. Without --reinstall, APT reports "already the newest version"
+# and leaves the old /usr/bin/radiotray-ng in place.
+sudo apt-get install -y --reinstall "$DEB"
 
 dpkg-query -W -f='${Status}\n' radiotray-ng 2>/dev/null | grep -qx 'install ok installed' \
     || die "radiotray-ng is not in the 'install ok installed' state after APT returned."
 
 command -v radiotray-ng >/dev/null 2>&1 || die "Installed radiotray-ng executable is not on PATH."
 command -v rtng-bookmark-editor >/dev/null 2>&1 || die "Installed bookmark editor is not on PATH."
+
+# Confirm the installed executable is byte-for-byte the one in the package.
+VERIFY_DIR="$(mktemp -d)"
+trap 'rm -rf "$VERIFY_DIR"' EXIT
+dpkg-deb -x "$DEB" "$VERIFY_DIR"
+[[ -x "$VERIFY_DIR/usr/bin/radiotray-ng" ]] || die "Package does not contain usr/bin/radiotray-ng."
+cmp -s "$VERIFY_DIR/usr/bin/radiotray-ng" "$(command -v radiotray-ng)" \
+    || die "Installed radiotray-ng does not match the newly built package."
+rm -rf "$VERIFY_DIR"
+trap - EXIT
 
 say
 say "[5/5] Applying the RadioTray-only GNOME AppIndicator click bridge..."
