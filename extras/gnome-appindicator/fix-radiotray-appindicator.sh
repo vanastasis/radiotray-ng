@@ -5,7 +5,7 @@ UUID="appindicatorsupport@rgcjonas.gmail.com"
 USER_EXT="${HOME}/.local/share/gnome-shell/extensions/${UUID}"
 SYSTEM_EXT="/usr/share/gnome-shell/extensions/${UUID}"
 JS_REL="indicatorStatusIcon.js"
-MARKER="RadioTray-NG native-menu click bridge v5"
+MARKER="RadioTray-NG native-menu click bridge v6"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 say() { printf '%s\n' "$*"; }
@@ -15,7 +15,7 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     die "Run this as your normal desktop user, not with sudo."
 fi
 
-say "== RadioTray-NG GNOME AppIndicator click fix v5 =="
+say "== RadioTray-NG GNOME AppIndicator click fix v6 =="
 say
 
 if [[ -f "${USER_EXT}/${JS_REL}" ]]; then
@@ -33,43 +33,23 @@ else
 fi
 
 JS="${EXT_DIR}/${JS_REL}"
-SYSTEM_JS="${SYSTEM_EXT}/${JS_REL}"
 BACKUP_DIR="${EXT_DIR}/.radiotray-ng-backups"
 BACKUP="${BACKUP_DIR}/indicatorStatusIcon.js.${STAMP}"
-TMP="${JS}.radiotray-v5.tmp"
 
 mkdir -p "$BACKUP_DIR"
 cp -a "$JS" "$BACKUP"
 say "Backup of current file: $BACKUP"
 
-# Always rebuild the patched JS from a pristine source.  Earlier bridge
-# revisions were incremental and could leave fragments behind when migrating.
-if [[ -f "$SYSTEM_JS" ]]; then
-    BASE="$SYSTEM_JS"
-    say "Pristine base: $BASE"
-else
-    BASE=""
-    while IFS= read -r candidate; do
-        if ! grep -q "RadioTray-NG native-menu click bridge" "$candidate"; then
-            BASE="$candidate"
-            break
-        fi
-    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'indicatorStatusIcon.js.*' -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-)
-
-    [[ -n "$BASE" ]] || die "No pristine indicatorStatusIcon.js is available to rebuild from."
-    say "Pristine backup base: $BASE"
-fi
-
-cp -a "$BASE" "$TMP"
-
-python3 - "$TMP" <<'PY'
+# V6 no longer requires a pristine system copy.  It repairs the installed file
+# in-place by replacing the complete button-handler region between the stock
+# press and scroll methods.  That removes every broken v1-v5 fragment at once.
+python3 - "$JS" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 s = path.read_text()
 
-marker = "RadioTray-NG native-menu click bridge v5"
 press_sig = "    vfunc_button_press_event(event) {"
 scroll_sig = "    vfunc_scroll_event(event) {"
 
@@ -77,17 +57,12 @@ press_start = s.find(press_sig)
 scroll_start = s.find(scroll_sig)
 
 if press_start < 0:
-    raise SystemExit("ERROR: pristine extension has no vfunc_button_press_event(event)")
+    raise SystemExit("ERROR: Could not find vfunc_button_press_event(event)")
 if scroll_start < 0 or scroll_start <= press_start:
-    raise SystemExit("ERROR: pristine extension has no expected vfunc_scroll_event(event)")
+    raise SystemExit("ERROR: Could not find the expected vfunc_scroll_event(event) after the press handler")
 
-# The pristine base must not already contain one of our earlier patches.
-if "RadioTray-NG native-menu click bridge" in s:
-    raise SystemExit("ERROR: selected base is not pristine")
-
-press_insert = press_start + len(press_sig)
-press_block = r'''
-        // RadioTray-NG native-menu click bridge v5
+replacement = r'''    vfunc_button_press_event(event) {
+        // RadioTray-NG native-menu click bridge v6
         const rtId = String(this._indicator?.id ?? '').toLowerCase();
         const rtTitle = String(this._indicator?.title ?? '').toLowerCase();
         const rtUniqueId = String(this._indicator?.uniqueId ?? '').toLowerCase();
@@ -103,19 +78,43 @@ press_block = r'''
 
             const button = event.get_button();
 
-            // Stop GNOME's stock primary double-click and secondary DBusMenu
-            // paths for RadioTray-NG.  We complete LEFT/RIGHT on release.
+            // Stop all stock click handling for RadioTray-NG. LEFT and RIGHT
+            // are completed on button release; MIDDLE is deliberately ignored.
             if (button === Clutter.BUTTON_PRIMARY ||
                 button === Clutter.BUTTON_SECONDARY ||
                 button === Clutter.BUTTON_MIDDLE)
                 return Clutter.EVENT_STOP;
         }
-'''
-s = s[:press_insert] + press_block + s[press_insert:]
 
-# Re-locate scroll after the insertion.
-scroll_start = s.find(scroll_sig)
-release_method = r'''
+        // Original AppIndicator behaviour for every other indicator.
+        if (this._waitDoubleClickPromise)
+            this._waitDoubleClickPromise.cancel();
+
+        if (event.get_button() === Clutter.BUTTON_MIDDLE) {
+            if (Main.panel.menuManager.activeMenu)
+                Main.panel.menuManager._closeMenu(true, Main.panel.menuManager.activeMenu);
+            this._indicator.secondaryActivate(event.get_time(), ...event.get_coords());
+            return Clutter.EVENT_STOP;
+        }
+
+        if (event.get_button() === Clutter.BUTTON_SECONDARY) {
+            this.menu.toggle();
+            return Clutter.EVENT_PROPAGATE;
+        }
+
+        const doubleClickHandled = this._maybeHandleDoubleClick(event);
+        if (doubleClickHandled === Clutter.EVENT_PROPAGATE &&
+            event.get_button() === Clutter.BUTTON_PRIMARY &&
+            this.menu.numMenuItems) {
+            if (this._indicator.supportsActivation !== false)
+                this._waitForDoubleClick().catch(logError);
+            else
+                this.menu.toggle();
+        }
+
+        return Clutter.EVENT_PROPAGATE;
+    }
+
     vfunc_button_release_event(event) {
         const rtId = String(this._indicator?.id ?? '').toLowerCase();
         const rtTitle = String(this._indicator?.title ?? '').toLowerCase();
@@ -143,9 +142,8 @@ release_method = r'''
 
                 const [x, y] = event.get_coords();
 
-                // Bypass AppIndicator.open() entirely.  Its normal primary
-                // path is deliberately double-click aware.  RadioTray-NG
-                // wants one LEFT or RIGHT click to open its native GTK menu.
+                // Direct D-Bus call: exactly one LEFT/RIGHT release maps to
+                // exactly one RadioTray-NG Activate(x,y).
                 this._indicator._proxy.ActivateAsync(
                     x, y, this._indicator.cancellable).catch(logError);
 
@@ -157,41 +155,39 @@ release_method = r'''
     }
 
 '''
-s = s[:scroll_start] + release_method + s[scroll_start:]
 
-# Older extension versions can have PanelMenu's own click gesture enabled.
-# Disable it only for RadioTray-NG when upstream has not already disabled it.
-if "this._clickGesture?.set_enabled(false);" not in s:
-    assign = "        this._indicator = indicator;"
-    idx = s.find(assign)
-    if idx >= 0:
-        end = idx + len(assign)
-        guard = r'''
+s = s[:press_start] + replacement + s[scroll_start:]
 
-        // RadioTray-NG owns its mouse clicks.
-        if (String(this._indicator?.id ?? '').toLowerCase() === 'radiotray-ng')
-            this._clickGesture?.set_enabled(false);
-'''
-        s = s[:end] + guard + s[end:]
+# Remove any old RadioTray bridge marker that may have survived outside the
+# replaced handler region.  The v6 marker itself is preserved.
+for marker in (
+    "RadioTray-NG native-menu click bridge v1",
+    "RadioTray-NG native-menu click bridge v2",
+    "RadioTray-NG native-menu click bridge v3",
+    "RadioTray-NG native-menu click bridge v4",
+    "RadioTray-NG native-menu click bridge v5",
+):
+    s = s.replace(marker, "obsolete RadioTray-NG bridge marker removed")
 
 path.write_text(s.rstrip("\n") + "\n")
 PY
 
-# Structural checks before replacing the live extension file.
-grep -qF "$MARKER" "$TMP" || die "V5 marker missing from generated JavaScript."
-grep -q "vfunc_button_release_event(event)" "$TMP" || die "V5 release handler missing."
-grep -q "_proxy.ActivateAsync" "$TMP" || die "V5 direct Activate call missing."
+grep -qF "$MARKER" "$JS" || die "V6 marker missing after repair."
+grep -q "vfunc_button_release_event(event)" "$JS" || die "V6 release handler missing."
+grep -q "_proxy.ActivateAsync" "$JS" || die "V6 direct Activate call missing."
 
-# Earlier migration fragments must not survive because TMP was built from a
-# pristine base.
-if grep -q "native-menu click bridge v[1234]" "$TMP"; then
-    die "Old RadioTray bridge fragment found in generated JavaScript."
-fi
+# The broken migration left duplicated handler fragments.  These checks make
+# sure only the expected handler definitions remain.
+PRESS_COUNT="$(grep -c '^[[:space:]]*vfunc_button_press_event(event)' "$JS" || true)"
+RELEASE_COUNT="$(grep -c '^[[:space:]]*vfunc_button_release_event(event)' "$JS" || true)"
+SCROLL_COUNT="$(grep -c '^[[:space:]]*vfunc_scroll_event(event)' "$JS" || true)"
 
-mv "$TMP" "$JS"
+[[ "$PRESS_COUNT" == "1" ]] || die "Expected exactly one button-press handler, found $PRESS_COUNT."
+[[ "$RELEASE_COUNT" == "1" ]] || die "Expected exactly one button-release handler, found $RELEASE_COUNT."
+[[ "$SCROLL_COUNT" == "1" ]] || die "Expected exactly one scroll handler, found $SCROLL_COUNT."
 
 say
-say "RadioTray-NG click policy v5 installed from a pristine AppIndicator file:"
+say "RadioTray-NG click policy v6 repaired successfully:"
 say "  LEFT   -> direct Activate on first release"
 say "  RIGHT  -> direct Activate on first release"
 say "  MIDDLE -> ignored"
@@ -205,15 +201,10 @@ fi
 [[ -n "$ACTIVE_PATH" ]] && say "GNOME extension path: $ACTIVE_PATH"
 
 say
-say "Reloading the extension..."
+say "Requesting extension reload..."
 gnome-extensions disable "$UUID" 2>/dev/null || true
 sleep 1
-if ! gnome-extensions enable "$UUID" 2>/dev/null; then
-    say "GNOME could not enable the extension in this running Wayland session."
-    say "Log out and back in; the on-disk JavaScript has been repaired."
-else
-    say "Extension enable request accepted."
-fi
+gnome-extensions enable "$UUID" 2>/dev/null || true
 
 say
 say "On GNOME Wayland, log out and back in once before testing."
