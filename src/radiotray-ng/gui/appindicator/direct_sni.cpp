@@ -29,11 +29,6 @@ const char* SNI_XML = R"XML(
       <arg name="y" type="i" direction="in"/>
     </method>
 
-    <method name="Activate">
-      <arg name="x" type="i" direction="in"/>
-      <arg name="y" type="i" direction="in"/>
-    </method>
-
     <method name="SecondaryActivate">
       <arg name="x" type="i" direction="in"/>
       <arg name="y" type="i" direction="in"/>
@@ -332,7 +327,6 @@ void DirectSni::on_sni_method_call(
     auto self = static_cast<DirectSni*>(user_data);
 
     if (g_strcmp0(method_name, "ContextMenu") == 0 ||
-        g_strcmp0(method_name, "Activate") == 0 ||
         g_strcmp0(method_name, "SecondaryActivate") == 0)
     {
         gint x = 0;
@@ -442,8 +436,11 @@ void DirectSni::on_menu_method_call(
 
         GVariantBuilder child_props;
         g_variant_builder_init(&child_props, G_VARIANT_TYPE("a{sv}"));
-        // GNOME Shell must see one menu item so PopupMenu.numMenuItems > 0
-        // and primary-click still opens the DBusMenu root. Keep that bridge
+        // GNOME Shell must see one menu item so PopupMenu.numMenuItems > 0.
+        // We intentionally DO NOT export StatusNotifierItem.Activate: current
+        // GNOME AppIndicator then treats the indicator as menu-only and opens
+        // this DBusMenu immediately on a single primary click instead of
+        // waiting to distinguish a double-click activation. Keep the bridge
         // item hidden: the root "opened" event launches RadioTray-NG's native
         // GTK menu, while the hidden item gives GNOME no visible row/pill to
         // render behind it.
