@@ -15,3 +15,5 @@ The helper modifies only the `radiotray-ng` indicator path in the user's copy of
 On GNOME Wayland, log out and back in once after applying the patch.
 
 The helper never edits `/usr/share/gnome-shell/extensions` directly. If the AppIndicator extension is installed system-wide, it creates a per-user copy first and patches that copy.
+
+The helper is idempotent: if the RadioTray marker is already present it exits without modifying the extension again. It keeps timestamped backups under the per-user extension directory before changing JavaScript.
