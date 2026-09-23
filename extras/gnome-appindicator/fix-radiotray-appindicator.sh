@@ -7,6 +7,7 @@ SYSTEM_EXT="/usr/share/gnome-shell/extensions/${UUID}"
 JS_REL="indicatorStatusIcon.js"
 MARKER_V1="RadioTray-NG native-menu click bridge"
 MARKER_V2="RadioTray-NG native-menu click bridge v2"
+MARKER_V3="RadioTray-NG native-menu click bridge v3"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 say() { printf '%s\n' "$*"; }
@@ -19,7 +20,6 @@ fi
 say "== RadioTray-NG GNOME AppIndicator click fix =="
 say
 
-# Prefer a per-user extension so distro-owned files under /usr are not modified.
 if [[ -f "${USER_EXT}/${JS_REL}" ]]; then
     EXT_DIR="$USER_EXT"
 elif [[ -f "${SYSTEM_EXT}/${JS_REL}" ]]; then
@@ -38,9 +38,14 @@ JS="${EXT_DIR}/${JS_REL}"
 BACKUP_DIR="${EXT_DIR}/.radiotray-ng-backups"
 BACKUP="${BACKUP_DIR}/indicatorStatusIcon.js.${STAMP}"
 
-# Detect the old experimental script which replaced the handler for every icon.
 if grep -q "RadioTray test: LEFT, MIDDLE and RIGHT" "$JS"; then
     die "The old all-indicators test patch is installed in ${JS}. Restore its backup/original extension first, then run this script again."
+fi
+
+if grep -qF "$MARKER_V3" "$JS"; then
+    say "Already patched with v3: $JS"
+    say "No changes required."
+    exit 0
 fi
 
 mkdir -p "$BACKUP_DIR"
@@ -54,16 +59,16 @@ import sys
 path = Path(sys.argv[1])
 s = path.read_text()
 
-marker_v1 = "RadioTray-NG native-menu click bridge"
-marker_v2 = "RadioTray-NG native-menu click bridge v2"
+marker_v3 = "RadioTray-NG native-menu click bridge v3"
+press_sig = "    vfunc_button_press_event(event) {"
+scroll_sig = "    vfunc_scroll_event(event) {"
 
-sig = "    vfunc_button_press_event(event) {"
-start = s.find(sig)
-if start < 0:
+if press_sig not in s:
     raise SystemExit("ERROR: Could not find vfunc_button_press_event(event) in indicatorStatusIcon.js")
+if scroll_sig not in s:
+    raise SystemExit("ERROR: Could not find vfunc_scroll_event(event) in indicatorStatusIcon.js")
 
-# Remove the exact v1 bridge that earlier RadioTray-NG builds inserted.
-old_block = r'''
+old_v1 = r'''
         // RadioTray-NG native-menu click bridge
         // RadioTray-NG owns its GTK popup menu.  Do not open GNOME Shell's
         // DBusMenu shim for this one indicator; send the click directly to
@@ -86,16 +91,8 @@ old_block = r'''
             }
         }
 '''
-if old_block in s:
-    s = s.replace(old_block, "", 1)
 
-# If v2 is not already present, install it at the top of the normal button
-# handler. It affects RadioTray-NG only; every other AppIndicator falls through
-# to the extension's original code untouched.
-if marker_v2 not in s:
-    start = s.find(sig)
-    insert_at = start + len(sig)
-    block = r'''
+old_v2 = r'''
         // RadioTray-NG native-menu click bridge v2
         // PRIMARY and SECONDARY open RadioTray-NG's native GTK menu on the
         // first click. MIDDLE is intentionally consumed and does nothing.
@@ -120,11 +117,78 @@ if marker_v2 not in s:
                 return Clutter.EVENT_STOP;
         }
 '''
-    s = s[:insert_at] + block + s[insert_at:]
 
-# Older extension releases may still have a PanelMenu click gesture. Current
-# releases already disable it globally. Add a targeted fallback only when the
-# extension does not already disable the gesture itself.
+for old in (old_v1, old_v2):
+    if old in s:
+        s = s.replace(old, "", 1)
+
+# GTK popup menus opened while the mouse button is still physically held can
+# immediately consume the corresponding release and disappear.  That made a
+# "single click" look like it needed a double click.  Consume the press here,
+# remember it, and invoke Activate only on the matching release.
+press_start = s.find(press_sig)
+press_insert = press_start + len(press_sig)
+press_block = r'''
+        // RadioTray-NG native-menu click bridge v3
+        // Arm LEFT/RIGHT on press, open on release. This avoids GTK consuming
+        // the initiating button release and immediately closing its native menu.
+        if (this._indicator?.id === 'radiotray-ng') {
+            if (this._waitDoubleClickPromise)
+                this._waitDoubleClickPromise.cancel();
+
+            const button = event.get_button();
+
+            if (button === Clutter.BUTTON_PRIMARY ||
+                button === Clutter.BUTTON_SECONDARY) {
+                this._radiotrayMenuButton = button;
+                return Clutter.EVENT_STOP;
+            }
+
+            if (button === Clutter.BUTTON_MIDDLE) {
+                delete this._radiotrayMenuButton;
+                return Clutter.EVENT_STOP;
+            }
+        }
+'''
+s = s[:press_insert] + press_block + s[press_insert:]
+
+release_method = r'''
+    vfunc_button_release_event(event) {
+        if (this._indicator?.id === 'radiotray-ng') {
+            const button = event.get_button();
+
+            if (button === Clutter.BUTTON_MIDDLE) {
+                delete this._radiotrayMenuButton;
+                return Clutter.EVENT_STOP;
+            }
+
+            if ((button === Clutter.BUTTON_PRIMARY ||
+                 button === Clutter.BUTTON_SECONDARY) &&
+                this._radiotrayMenuButton === button) {
+                delete this._radiotrayMenuButton;
+
+                if (Main.panel.menuManager.activeMenu)
+                    Main.panel.menuManager._closeMenu(
+                        true, Main.panel.menuManager.activeMenu);
+
+                this._indicator.open(
+                    ...event.get_coords(), event.get_time()).catch(logError);
+                return Clutter.EVENT_STOP;
+            }
+        }
+
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+'''
+
+scroll_start = s.find(scroll_sig)
+if scroll_start < 0:
+    raise SystemExit("ERROR: Could not locate vfunc_scroll_event(event)")
+s = s[:scroll_start] + release_method + s[scroll_start:]
+
+# Current upstream AppIndicator already disables PanelMenu's click gesture.
+# Keep a targeted fallback for older extension versions.
 if "this._clickGesture?.set_enabled(false);" not in s:
     assign = "        this._indicator = indicator;"
     idx = s.find(assign)
@@ -141,15 +205,20 @@ if "this._clickGesture?.set_enabled(false);" not in s:
 path.write_text(s.rstrip("\n") + "\n")
 PY
 
-if ! grep -qF "$MARKER_V2" "$JS"; then
+if ! grep -qF "$MARKER_V3" "$JS"; then
     cp -a "$BACKUP" "$JS"
     die "Patch verification failed; original indicatorStatusIcon.js was restored."
 fi
 
+if ! grep -q "vfunc_button_release_event(event)" "$JS"; then
+    cp -a "$BACKUP" "$JS"
+    die "Release-handler verification failed; original indicatorStatusIcon.js was restored."
+fi
+
 say
-say "RadioTray-NG click policy installed:"
-say "  LEFT   -> native menu on first click"
-say "  RIGHT  -> native menu on first click"
+say "RadioTray-NG click policy v3 installed:"
+say "  LEFT   -> native menu on first click (opens on release)"
+say "  RIGHT  -> native menu on first click (opens on release)"
 say "  MIDDLE -> ignored"
 say "Other AppIndicators retain their normal click behaviour."
 say "Modified: $JS"
@@ -178,6 +247,6 @@ if [[ -n "$ACTIVE_AFTER" ]]; then
 fi
 
 say
-say "GNOME Wayland: log out and back in once so Shell definitely loads the v2 JavaScript."
-say "Expected after login: LEFT/RIGHT single-click -> native RadioTray menu; MIDDLE -> no action; scroll -> volume."
-say "The hidden DBusMenu bridge keeps the old grey popup artefact invisible."
+say "GNOME Wayland: log out and back in once so Shell definitely loads the v3 JavaScript."
+say "Expected after login: LEFT/RIGHT one click -> native menu; MIDDLE -> no action; scroll -> volume."
+say "The hidden DBusMenu bridge keeps the grey popup artefact invisible."
