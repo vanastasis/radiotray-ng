@@ -6,7 +6,7 @@ RadioTray-NG does **not** want GNOME Shell to render that DBusMenu. Its real men
 
 The DBusMenu bridge item is therefore exported as **hidden**. GNOME Shell still counts it for `numMenuItems`, so primary-click can open the DBusMenu root and deliver the root `opened` event, but there is no visible Shell menu row to draw behind the native GTK popup.
 
-`DirectSni` exports `StatusNotifierItem.Activate` for the RadioTray-specific GNOME bridge. The bridge intercepts only left and right button presses and invokes `Activate` immediately; middle click is suppressed. The hidden DBusMenu item remains only as a readiness/fallback bridge and is not rendered.
+`DirectSni` exports `StatusNotifierItem.Activate` for the RadioTray-specific GNOME bridge. The bridge intercepts only left and right clicks and invokes `Activate` on button release; middle click is suppressed. The hidden DBusMenu item remains only as a readiness/fallback bridge and is not rendered.
 
 Run:
 
@@ -14,7 +14,7 @@ Run:
 ./extras/gnome-appindicator/fix-radiotray-appindicator.sh
 ```
 
-The helper modifies only the `radiotray-ng` indicator path in the user's copy of `indicatorStatusIcon.js`. Version 2 routes **primary (left)** and **secondary (right)** clicks directly to `Activate(x, y)` so the native GTK menu opens on the first click. **Middle click is consumed and deliberately does nothing.** Other indicators continue through the extension's original handler unchanged.
+The helper modifies only the `radiotray-ng` indicator path in the user's copy of `indicatorStatusIcon.js`. Version 3 consumes **primary (left)** and **secondary (right)** on button press, then invokes `Activate(x, y)` on the matching button release. This is still one normal click, but opening after release prevents GTK from interpreting that same release as a menu-dismiss event. **Middle click is consumed and deliberately does nothing.** Other indicators continue through the extension's original handler unchanged.
 
 On GNOME Wayland, log out and back in once after applying the patch.
 
